@@ -1,0 +1,71 @@
+from transformers import BertTokenizer,BertModel,AdamW
+import torch
+import torch.nn as nn
+import copy
+from torchcrf import CRF
+LABLE_TO_ID = {
+    "o": 0,
+    "B-time": 1,
+    "I-time": 2,
+    "B-loc": 3,
+    "I-loc": 4,
+    "X": 5
+}
+ID_TO_LABLE ={LABLE_TO_ID[key]: key for key in LABLE_TO_ID.keys()}
+class Mynet(nn.Module):
+    def __init__(self):
+        super(Mynet,self).__init__()
+        self.bert = BertModel.from_pretrained('..//bert-base-chinese')
+        self.linear = torch.nn.Linear(768, 6)
+        self.crf = CRF(len(LABLE_TO_ID), batch_first=True)
+    def forward(self,input_ids,attention_mask,token_type_ids):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)[0]
+        outputs = self.linear(outputs)
+        return outputs
+    def loss_fn(self,emissions,attention_masks,labels):
+        loss = self.crf(
+            emissions=emissions,
+            tags=labels.long(),
+            mask=attention_masks.byte()
+        )
+        return loss
+    def predict(self,feature,attention_mask):
+        predict = self.crf.decode(feature,attention_mask.byte())
+        return predict
+tokenizer = BertTokenizer.from_pretrained('..//bert-base-chinese')
+text = '2年我在家里蹲大学读书'
+ylable = ['B-time','I-time','o','o','B-loc','I-loc','I-loc','I-loc','I-loc','o','o']
+max_seq_len = 20
+tags = []
+tags.append(LABLE_TO_ID['X'])
+for i,lable in enumerate(ylable):
+    tags.append(LABLE_TO_ID[lable])
+tags.append(LABLE_TO_ID['X'])
+pad_labels = [LABLE_TO_ID['o']]
+if len(tags) < max_seq_len:
+    pad_length = max_seq_len - len(tags)
+    tags = tags + pad_labels * pad_length
+tags= torch.tensor([tags])
+features = tokenizer.encode_plus(text,
+                            max_length=max_seq_len,
+                            pad_to_max_length=True
+                            )
+input_ids = torch.tensor([features['input_ids']])
+attention_mask = torch.tensor([features['attention_mask']])
+token_type_ids = torch.tensor([features['token_type_ids']])
+model = Mynet()
+param_optimizer = list(model.named_parameters())
+no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+param_group_optimizers = [
+    {'params':[p for n,p in param_optimizer if not any(nd in n for nd in no_decay)],'weight_decay': 0.01},
+    {'params':[p for n,p in param_optimizer if  any(nd in n for nd in no_decay)],'weight_decay': 0.01}
+    ]
+optimizer = AdamW(param_group_optimizers,lr=0.0001)
+for epoch in range(20):
+    optimizer.zero_grad()
+    bert_encode = model(input_ids,attention_mask,token_type_ids)
+    loss = -1. * model.loss_fn(bert_encode,attention_mask,tags)
+    loss.backward()
+    optimizer.step()
+    pre = model.predict(bert_encode,attention_mask)[0][1:-1]
+    print([ID_TO_LABLE[i] for i in pre])
